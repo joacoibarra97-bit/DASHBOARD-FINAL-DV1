@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { STORE_NAMES, parseStoreWorkbook, buildGeneral, StoreData } from "@/lib/parseExcel";
-import { getReportData, saveReportData } from "@/lib/blob";
+import { STORE_NAMES, parseStoreWorkbook, buildGeneral, StoreData } from "../../../lib/parseExcel";
+import { getReportData, saveReportData } from "../../../lib/blob";
 
 const MESES = [
   "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
