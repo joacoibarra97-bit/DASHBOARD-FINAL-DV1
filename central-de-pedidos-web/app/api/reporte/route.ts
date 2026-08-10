@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getReportData, saveReportData } from "@/lib/blob";
+import { getReportData, saveReportData } from "../../../lib/blob";
 
 export const dynamic = "force-dynamic";
 
