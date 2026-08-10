@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 
 const COOKIE = "site_auth";
 const PUBLIC_PATHS = ["/login", "/api/login", "/dashboard.css", "/dashboard.js", "/favicon.ico"];
@@ -26,6 +27,10 @@ export function middleware(req: NextRequest) {
 
   return NextResponse.next();
 }
+
+export const config = {
+  matcher: ["/((?!_next/static|_next/image).*)"],
+};
 
 export const config = {
   matcher: ["/((?!_next/static|_next/image).*)"],
