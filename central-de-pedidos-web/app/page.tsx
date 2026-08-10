@@ -1,5 +1,5 @@
-import { getReportData } from "@/lib/blob";
-import { DASHBOARD_BODY_HTML } from "@/content/dashboardBody";
+import { getReportData } from "../lib/blob";
+import { DASHBOARD_BODY_HTML } from "../content/dashboardBody";
 
 export const dynamic = "force-dynamic"; // siempre traer los datos más recientes del Blob
 
