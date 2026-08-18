@@ -26,6 +26,7 @@ export async function saveReportData(data: Record<string, any>): Promise<void> {
   await put(KEY, JSON.stringify(data), {
     access: "private",
     addRandomSuffix: false,
+    allowOverwrite: true,
     contentType: "application/json",
   });
 }
