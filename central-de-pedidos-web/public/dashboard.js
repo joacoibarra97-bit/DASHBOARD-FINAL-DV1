@@ -4,9 +4,21 @@ const ORIGINAL = JSON.parse(JSON.stringify(RAW));
 let ORIGINAL_SAVED = JSON.parse(JSON.stringify(RAW));
 let DATA = JSON.parse(JSON.stringify(RAW));
 
-const MONTHS = ['Abril 2026','Mayo 2026','Junio 2026','Julio 2026'];
-const AVAILABLE_MONTHS = Object.keys(DATA);
-let currentMonth = AVAILABLE_MONTHS.includes('Julio 2026') ? 'Julio 2026' : (AVAILABLE_MONTHS.includes('Junio 2026') ? 'Junio 2026' : AVAILABLE_MONTHS[0]);
+// Los meses se arman solos a partir de lo que realmente haya guardado (no una lista fija a mano),
+// así cualquier mes nuevo que subas (Agosto, Septiembre, etc.) aparece automáticamente.
+const MES_ORDEN = { Enero:0, Febrero:1, Marzo:2, Abril:3, Mayo:4, Junio:5, Julio:6, Agosto:7, Septiembre:8, Octubre:9, Noviembre:10, Diciembre:11 };
+function ordenarMeses(meses){
+  return meses.slice().sort((a, b) => {
+    const [ma, ya] = a.split(' ');
+    const [mb, yb] = b.split(' ');
+    if(ya !== yb) return parseInt(ya, 10) - parseInt(yb, 10);
+    return (MES_ORDEN[ma] ?? 99) - (MES_ORDEN[mb] ?? 99);
+  });
+}
+
+const AVAILABLE_MONTHS = ordenarMeses(Object.keys(DATA));
+const MONTHS = AVAILABLE_MONTHS;
+let currentMonth = AVAILABLE_MONTHS.length ? AVAILABLE_MONTHS[AVAILABLE_MONTHS.length - 1] : null;
 
 function ensureManual(obj){
   Object.keys(obj).forEach(month => {
