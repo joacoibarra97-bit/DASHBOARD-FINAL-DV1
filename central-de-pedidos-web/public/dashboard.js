@@ -681,22 +681,68 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
   }
 });
 
-document.getElementById('exportBtn').addEventListener('click', () => {
-  // "Hornea" el estado actual (con todas las ediciones manuales, de todos los meses y locales)
-  // como el nuevo contenido base del archivo, para que al reabrirlo se conserve todo tal cual quedó.
-  const rawDataEl = document.getElementById('raw-data');
-  rawDataEl.textContent = JSON.stringify(DATA);
-  const htmlContent = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
-  const blob = new Blob([htmlContent], { type: 'text/html' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  const stamp = new Date().toISOString().slice(0,10);
-  a.href = url;
-  a.download = `dashboard_pedidos_actualizado_${stamp}.html`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+document.getElementById('exportBtn').addEventListener('click', async () => {
+  // Genera un .html AUTOCONTENIDO (CSS + JS + datos adentro) que funciona abierto desde la compu,
+  // sin internet y sin Vercel. Incluye todas las ediciones manuales actuales.
+  const btn = document.getElementById('exportBtn');
+  const original = btn.textContent;
+  btn.textContent = 'Generando...';
+  btn.disabled = true;
+  try {
+    // 1) Traemos el CSS y el JS del propio sitio para pegarlos DENTRO del archivo
+    const [css, js] = await Promise.all([
+      fetch('/dashboard.css').then(r => { if(!r.ok) throw new Error('No se pudo leer dashboard.css'); return r.text(); }),
+      fetch('/dashboard.js').then(r => { if(!r.ok) throw new Error('No se pudo leer dashboard.js'); return r.text(); })
+    ]);
+
+    // 2) Esqueleto del dashboard: copiamos el contenedor y vaciamos lo que dibuja el JS al cargar
+    const skeleton = document.getElementById('mainWrap').parentElement.cloneNode(true);
+    ['monthSelect', 'tabBar', 'mainWrap', 'footerNote'].forEach(id => {
+      const el = skeleton.querySelector('#' + id);
+      if(el) el.innerHTML = '';
+    });
+    // el cartel "Usá este botón para guardar..." no aplica al archivo descargado
+    skeleton.querySelectorAll('.reset-bar span.footer-note:not(#footerNote)').forEach(el => el.remove());
+
+    // 3) Datos actuales (con ediciones). Se escapa "<" para que nunca cierre el <script> por error.
+    //    Se guardan en <script id="raw-data"> para que /importar pueda volver a leer este archivo.
+    const json = JSON.stringify(DATA).replace(/</g, '\\u003c');
+    const safeJs = js.replace(/<\/script/gi, '<\\/script');
+
+    // En el archivo descargado no hay servidor: ocultamos lo que depende de él
+    const standaloneCss = 'a[href^="/"], #saveBtn, #exportBtn { display: none !important; }';
+
+    const html =
+      '<!DOCTYPE html>\n<html lang="es">\n<head>\n' +
+      '<meta charset="utf-8">\n' +
+      '<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
+      '<title>Central de Pedidos</title>\n' +
+      '<style>\n' + css + '\n' + standaloneCss + '\n</style>\n' +
+      '</head>\n<body style="margin:0;padding:0">\n' +
+      skeleton.innerHTML + '\n' +
+      '<script id="raw-data" type="application/json">' + json + '</script>\n' +
+      '<script>window.__REPORT_DATA__ = JSON.parse(document.getElementById("raw-data").textContent);</script>\n' +
+      '<script>\n' + safeJs + '\n</script>\n' +
+      '</body>\n</html>';
+
+    // 4) Descarga
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `dashboard_pedidos_${stamp}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    btn.textContent = '✓ Descargado';
+  } catch(e){
+    console.error('Error al exportar:', e);
+    btn.textContent = '✕ Error al descargar';
+  } finally {
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1800);
+  }
 });
 
 /* ===================== Init ===================== */
