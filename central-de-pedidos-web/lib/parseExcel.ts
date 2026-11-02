@@ -1,15 +1,6 @@
 import * as XLSX from "xlsx";
 
-export const STORE_NAMES = [
-  "Arenales",
-  "Bulnes",
-  "Echeverria",
-  "Guayaquil",
-  "Olazabal",
-  "Uriarte",
-  "Uruguay",
-  "Vidal",
-] as const;
+export { BASE_STORES as STORE_NAMES, storesForMonth } from "./stores";
 
 type ChannelBlock = { count: number; revenue: number };
 export type StoreData = {
@@ -47,106 +38,204 @@ function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
+// "Servicio" = columna "Punto de acceso" de Waitry. "M" = Mostrador.
+// Esos pedidos NO cuentan como delivery: van a la pestaña Mostrador.
+function isMostrador(raw: any): boolean {
+  if (raw == null) return false;
+  const c = String(raw).trim().toUpperCase();
+  return c === "M" || c === "MOSTRADOR";
+}
+
+// La columna "Hora" puede venir como fecha real de Excel o como texto ("2026-10-1 10:35",
+// con día SIN cero adelante). Aceptamos las dos formas.
+function parseHora(v: any): { date: string; hour: number } | null {
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    return { date: isoDate(v), hour: v.getHours() };
+  }
+  if (typeof v === "string") {
+    const m = v.trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})/);
+    if (m) {
+      const date = `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+      return { date, hour: parseInt(m[4], 10) };
+    }
+  }
+  return null;
+}
+
+// Pedidos de mostrador de un local en un mes (para la pestaña /mostrador)
+export type MostradorData = {
+  total_valid: number;
+  revenue: number;
+  abandoned: number;
+  cancelled: number;
+  payment: { SI: ChannelBlock; NO: ChannelBlock };
+  hourly_avg: number[];
+  daily: { date: string; count: number; revenue: number }[];
+  best_day_revenue: { date: string; count: number; revenue: number };
+  best_day_count: { date: string; count: number; revenue: number };
+  num_days: number;
+};
+
 export function parseStoreWorkbook(buffer: ArrayBuffer): StoreData {
+  return parseStoreWorkbookFull(buffer).delivery;
+}
+
+export function parseStoreWorkbookFull(buffer: ArrayBuffer): { delivery: StoreData; mostrador: MostradorData } {
   const wb = XLSX.read(buffer, { type: "array", cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
 
-  let total_valid = 0,
-    abandoned = 0,
-    cancelled = 0;
-  const chanCount: Record<string, number> = {};
-  const chanRev: Record<string, number> = {};
-  const payCount: Record<string, number> = { SI: 0, NO: 0 };
-  const payRev: Record<string, number> = { SI: 0, NO: 0 };
-  const hourly = new Array(24).fill(0);
-  const dailyCount: Record<string, number> = {};
-  const dailyRev: Record<string, number> = {};
-  const daysSet = new Set<string>();
+  // Cada pedido va a UNO de los dos grupos según el servicio; los filtros
+  // (sin comanda / cancelado) se aplican dentro de cada grupo.
+  type Acc = {
+    valid: number; abandoned: number; cancelled: number;
+    chanCount: Record<string, number>; chanRev: Record<string, number>;
+    payCount: Record<string, number>; payRev: Record<string, number>;
+    hourly: number[]; dailyCount: Record<string, number>; dailyRev: Record<string, number>;
+    days: Set<string>; revenue: number;
+  };
+  const newAcc = (): Acc => ({
+    valid: 0, abandoned: 0, cancelled: 0, chanCount: {}, chanRev: {},
+    payCount: { SI: 0, NO: 0 }, payRev: { SI: 0, NO: 0 },
+    hourly: new Array(24).fill(0), dailyCount: {}, dailyRev: {}, days: new Set<string>(), revenue: 0,
+  });
+  const del = newAcc();
+  const mos = newAcc();
 
   // los datos arrancan en la fila 3 (índice 2), igual que en las planillas de Waitry
   for (let i = 2; i < rows.length; i++) {
     const row = rows[i];
     if (!row) continue;
     const nrEntrega = row[1];
+    const canalRaw = row[2]; // "Punto de acceso" = servicio
     const hora = row[3];
-    const canalRaw = row[2];
     const totalDesc = row[11];
     const cancelada = row[12];
     const pagado = row[13];
 
+    const acc = isMostrador(canalRaw) ? mos : del;
+
     const isAbandoned = nrEntrega == null || String(nrEntrega).trim() === "";
     const isCancelled = cancelada != null && String(cancelada).toLowerCase().includes("cancel");
 
-    if (isAbandoned) {
-      abandoned++;
-      continue;
-    }
-    if (isCancelled) {
-      cancelled++;
-      continue;
-    }
+    if (isAbandoned) { acc.abandoned++; continue; }
+    if (isCancelled) { acc.cancelled++; continue; }
 
-    total_valid++;
+    acc.valid++;
     const chan = normalizeChannel(canalRaw) || "?";
     const rev = typeof totalDesc === "number" ? totalDesc : 0;
-    chanCount[chan] = (chanCount[chan] || 0) + 1;
-    chanRev[chan] = (chanRev[chan] || 0) + rev;
+    acc.revenue += rev;
+    acc.chanCount[chan] = (acc.chanCount[chan] || 0) + 1;
+    acc.chanRev[chan] = (acc.chanRev[chan] || 0) + rev;
 
     const pay = pagado ? String(pagado).trim().toUpperCase() : "NO";
-    payCount[pay] = (payCount[pay] || 0) + 1;
-    payRev[pay] = (payRev[pay] || 0) + rev;
+    acc.payCount[pay] = (acc.payCount[pay] || 0) + 1;
+    acc.payRev[pay] = (acc.payRev[pay] || 0) + rev;
 
-    if (hora instanceof Date && !isNaN(hora.getTime())) {
-      const h = hora.getHours();
-      hourly[h]++;
-      const d = isoDate(hora);
-      dailyCount[d] = (dailyCount[d] || 0) + 1;
-      dailyRev[d] = (dailyRev[d] || 0) + rev;
-      daysSet.add(d);
+    const h = parseHora(hora);
+    if (h) {
+      acc.hourly[h.hour]++;
+      acc.dailyCount[h.date] = (acc.dailyCount[h.date] || 0) + 1;
+      acc.dailyRev[h.date] = (acc.dailyRev[h.date] || 0) + rev;
+      acc.days.add(h.date);
     }
   }
 
-  const numDays = daysSet.size || 1;
-  const hourlyAvg = hourly.map((h) => Math.round((h / numDays) * 100) / 100);
+  function summarize(acc: Acc) {
+    const numDays = acc.days.size || 1;
+    const hourlyAvg = acc.hourly.map((h) => Math.round((h / numDays) * 100) / 100);
+    const daily = Object.keys(acc.dailyCount).sort().map((d) => ({ date: d, count: acc.dailyCount[d], revenue: acc.dailyRev[d] }));
+    const empty = { date: "", count: 0, revenue: 0 };
+    const bestRev = daily.reduce((a, b) => (b.revenue > a.revenue ? b : a), daily[0] || empty);
+    const bestCnt = daily.reduce((a, b) => (b.count > a.count ? b : a), daily[0] || empty);
+    return { numDays, hourlyAvg, daily, bestRev, bestCnt };
+  }
 
-  const dailyDates = Object.keys(dailyCount).sort();
-  const daily = dailyDates.map((d) => ({ date: d, count: dailyCount[d], revenue: dailyRev[d] }));
-  const bestDayRevenue = daily.reduce((a, b) => (b.revenue > a.revenue ? b : a), daily[0] || { date: "", count: 0, revenue: 0 });
-  const bestDayCount = daily.reduce((a, b) => (b.count > a.count ? b : a), daily[0] || { date: "", count: 0, revenue: 0 });
+  const d = summarize(del);
+  const catCount = (del.chanCount["D"] || 0) + (del.chanCount["MD"] || 0) + (del.chanCount["PO"] || 0);
+  const catRev = (del.chanRev["D"] || 0) + (del.chanRev["MD"] || 0) + (del.chanRev["PO"] || 0);
 
-  const catCount = (chanCount["D"] || 0) + (chanCount["MD"] || 0) + (chanCount["PO"] || 0);
-  const catRev = (chanRev["D"] || 0) + (chanRev["MD"] || 0) + (chanRev["PO"] || 0);
-
-  return {
-    total_valid,
-    abandoned,
-    cancelled,
+  const delivery: StoreData = {
+    total_valid: del.valid,
+    abandoned: del.abandoned,
+    cancelled: del.cancelled,
     channels: {
-      Rappi: { count: chanCount["Rappi"] || 0, revenue: chanRev["Rappi"] || 0 },
-      PedidosYa: { count: chanCount["PedidosYa"] || 0, revenue: chanRev["PedidosYa"] || 0 },
+      Rappi: { count: del.chanCount["Rappi"] || 0, revenue: del.chanRev["Rappi"] || 0 },
+      PedidosYa: { count: del.chanCount["PedidosYa"] || 0, revenue: del.chanRev["PedidosYa"] || 0 },
       CAT: {
         count: catCount,
         revenue: catRev,
         sub: {
-          D: { count: chanCount["D"] || 0, revenue: chanRev["D"] || 0 },
-          MD: { count: chanCount["MD"] || 0, revenue: chanRev["MD"] || 0 },
-          PO: { count: chanCount["PO"] || 0, revenue: chanRev["PO"] || 0 },
+          D: { count: del.chanCount["D"] || 0, revenue: del.chanRev["D"] || 0 },
+          MD: { count: del.chanCount["MD"] || 0, revenue: del.chanRev["MD"] || 0 },
+          PO: { count: del.chanCount["PO"] || 0, revenue: del.chanRev["PO"] || 0 },
         },
       },
     },
     payment: {
-      SI: { count: payCount["SI"] || 0, revenue: payRev["SI"] || 0 },
-      NO: { count: payCount["NO"] || 0, revenue: payRev["NO"] || 0 },
+      SI: { count: del.payCount["SI"] || 0, revenue: del.payRev["SI"] || 0 },
+      NO: { count: del.payCount["NO"] || 0, revenue: del.payRev["NO"] || 0 },
     },
-    hourly_avg: hourlyAvg,
-    daily,
-    best_day_revenue: bestDayRevenue,
-    best_day_count: bestDayCount,
-    num_days: numDays,
+    hourly_avg: d.hourlyAvg,
+    daily: d.daily,
+    best_day_revenue: d.bestRev,
+    best_day_count: d.bestCnt,
+    num_days: d.numDays,
     manual: { whatsapp: 0, telefono: 0, online: 0 },
     yearAgo: { total: 0, rappi: 0, py: 0, cat: 0 },
   };
+
+  const m = summarize(mos);
+  const mostrador: MostradorData = {
+    total_valid: mos.valid,
+    revenue: mos.revenue,
+    abandoned: mos.abandoned,
+    cancelled: mos.cancelled,
+    payment: {
+      SI: { count: mos.payCount["SI"] || 0, revenue: mos.payRev["SI"] || 0 },
+      NO: { count: mos.payCount["NO"] || 0, revenue: mos.payRev["NO"] || 0 },
+    },
+    hourly_avg: m.hourlyAvg,
+    daily: m.daily,
+    best_day_revenue: m.bestRev,
+    best_day_count: m.bestCnt,
+    num_days: m.numDays,
+  };
+
+  return { delivery, mostrador };
+}
+
+// Suma de todos los locales para la pestaña Mostrador
+export function buildMostradorGeneral(stores: Record<string, MostradorData>): MostradorData {
+  const g: MostradorData = {
+    total_valid: 0, revenue: 0, abandoned: 0, cancelled: 0,
+    payment: { SI: { count: 0, revenue: 0 }, NO: { count: 0, revenue: 0 } },
+    hourly_avg: new Array(24).fill(0), daily: [],
+    best_day_revenue: { date: "", count: 0, revenue: 0 }, best_day_count: { date: "", count: 0, revenue: 0 },
+    num_days: 0,
+  };
+  const hourlySum = new Array(24).fill(0);
+  const dailyAgg: Record<string, { count: number; revenue: number }> = {};
+  let daysAccum = 0;
+  const list = Object.values(stores);
+  list.forEach((s) => {
+    g.total_valid += s.total_valid; g.revenue += s.revenue; g.abandoned += s.abandoned; g.cancelled += s.cancelled;
+    (["SI", "NO"] as const).forEach((p) => { g.payment[p].count += s.payment[p].count; g.payment[p].revenue += s.payment[p].revenue; });
+    for (let h = 0; h < 24; h++) hourlySum[h] += s.hourly_avg[h] * s.num_days;
+    s.daily.forEach((r) => {
+      if (!dailyAgg[r.date]) dailyAgg[r.date] = { count: 0, revenue: 0 };
+      dailyAgg[r.date].count += r.count; dailyAgg[r.date].revenue += r.revenue;
+    });
+    daysAccum += s.num_days;
+  });
+  const avgDays = list.length ? daysAccum / list.length : 0;
+  g.hourly_avg = hourlySum.map((h) => (avgDays ? Math.round((h / avgDays) * 100) / 100 : 0));
+  g.daily = Object.keys(dailyAgg).sort().map((d) => ({ date: d, count: dailyAgg[d].count, revenue: dailyAgg[d].revenue }));
+  const empty = { date: "", count: 0, revenue: 0 };
+  g.best_day_revenue = g.daily.reduce((a, b) => (b.revenue > a.revenue ? b : a), g.daily[0] || empty);
+  g.best_day_count = g.daily.reduce((a, b) => (b.count > a.count ? b : a), g.daily[0] || empty);
+  g.num_days = Math.round(avgDays * 10) / 10;
+  return g;
 }
 
 export function buildGeneral(stores: Record<string, StoreData>): StoreData {

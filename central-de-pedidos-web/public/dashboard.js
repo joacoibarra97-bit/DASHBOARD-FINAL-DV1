@@ -35,8 +35,15 @@ function ensureManual(obj){
 ensureManual(DATA);
 ensureManual(ORIGINAL);
 
-const STORES = Object.keys(DATA[currentMonth]).filter(s => s !== 'General');
-const TAB_ORDER = ['General', ...STORES, 'Histórico'];
+// Locales de TODOS los meses (un local nuevo, como Franklin, solo existe desde cierto mes)
+const STORES = (() => {
+  const seen = [];
+  AVAILABLE_MONTHS.forEach(m => Object.keys(DATA[m]).forEach(s => { if(s !== 'General' && !seen.includes(s)) seen.push(s); }));
+  return seen;
+})();
+function storesOf(month){ return Object.keys(DATA[month] || {}).filter(s => s !== 'General'); }
+// Las pestañas dependen del mes: un local solo aparece en los meses donde tiene datos
+function tabOrder(){ return ['General', ...storesOf(currentMonth), 'Histórico']; }
 let currentTab = 'General';
 let tableMetric = 'count'; // 'count' | 'revenue'
 let historicoStore = 'Todos los locales';
@@ -92,7 +99,7 @@ function renderMonthSelect(){
 function renderTabs(){
   const el = document.getElementById('tabBar');
   el.innerHTML = '';
-  TAB_ORDER.forEach(t => {
+  tabOrder().forEach(t => {
     const btn = document.createElement('button');
     btn.className = 'tab-btn' + (t === currentTab ? ' active' : '');
     btn.textContent = t === 'General' ? '📍 General' : t === 'Histórico' ? '📈 Histórico' : t;
@@ -103,6 +110,10 @@ function renderTabs(){
 
 /* ===================== Render principal ===================== */
 function renderAll(){
+  // si cambiás a un mes donde el local de la pestaña actual no existe, volvemos a General
+  if(currentTab !== 'Histórico' && currentTab !== 'General' && !(DATA[currentMonth] && DATA[currentMonth][currentTab])){
+    currentTab = 'General';
+  }
   renderMonthSelect();
   renderTabs();
   renderMain();
@@ -166,6 +177,9 @@ function renderMain(){
   const prevMonth = previousMonthOf(currentMonth);
   if(prevMonth && DATA[prevMonth][currentTab]){
     html += `<p class="section-note">Si editás algún número a mano, esta comparación se recalcula sola con el valor nuevo.</p>`;
+    if(currentTab === 'General' && storesOf(currentMonth).length !== storesOf(prevMonth).length){
+      html += `<p class="section-note" style="color:#B9760F;"><b>Ojo:</b> ${currentMonth} suma ${storesOf(currentMonth).length} locales y ${prevMonth} sumó ${storesOf(prevMonth).length}. La variación incluye el aporte de los locales nuevos; para comparar igual contra igual, mirá cada local por separado.</p>`;
+    }
     html += comparisonTableHTML(store, DATA[prevMonth][currentTab], prevMonth, currentMonth);
   } else {
     html += `<p class="section-note">Todavía no hay datos del mes anterior a ${currentMonth} cargados para comparar.</p>`;
@@ -318,7 +332,7 @@ function renderMain(){
   if(isGeneral) attachTableToggle();
 
   document.getElementById('footerNote').textContent =
-    `${currentMonth} · ${isGeneral ? 'los 8 locales' : currentTab} · ${fmtInt(store.num_days || 30)} días con datos`;
+    `${currentMonth} · ${isGeneral ? 'los ' + storesOf(currentMonth).length + ' locales' : currentTab} · ${fmtInt(store.num_days || 30)} días con datos`;
 }
 
 function previousMonthOf(m){
@@ -375,7 +389,7 @@ function comparisonTableHTML(store, prevStore, prevMonthLabel, currMonthLabel){
 /* ===================== Tabla de rendimiento ===================== */
 function renderPerfTable(){
   const channels = [['Rappi','Rappi'],['PedidosYa','PedidosYa'],['CAT','C.A.T.']];
-  const rows = STORES.map(s => {
+  const rows = storesOf(currentMonth).map(s => {
     const st = DATA[currentMonth][s];
     return { name: s, channels: st.channels };
   });
@@ -475,11 +489,13 @@ function attachEditableHandlers(){
 
 /* ===================== Vista Histórico (todos los meses) ===================== */
 function renderHistoricoView(){
-  const months = MONTHS.filter(m => AVAILABLE_MONTHS.includes(m));
   const storeOptions = ['Todos los locales', ...STORES];
   if(historicoStore !== 'Todos los locales' && !STORES.includes(historicoStore)){
     historicoStore = 'Todos los locales';
   }
+  // un local nuevo solo muestra los meses donde existe (sin ceros falsos en los meses anteriores)
+  const histKey = historicoStore === 'Todos los locales' ? 'General' : historicoStore;
+  const months = MONTHS.filter(m => AVAILABLE_MONTHS.includes(m) && DATA[m][histKey]);
 
   function valueFor(month, metric){
     const key = historicoStore === 'Todos los locales' ? 'General' : historicoStore;
@@ -490,7 +506,7 @@ function renderHistoricoView(){
   const values = months.map(m => valueFor(m, historicoMetric));
 
   let html = `<div class="section-title"><span class="idx">01</span> Histórico de pedidos por mes</div>`;
-  html += `<p class="section-note">Elegí un local o mirá la suma de los 8. Si más adelante cargás más meses o editás algún dato, este gráfico se actualiza solo.</p>`;
+  html += `<p class="section-note">Elegí un local o mirá la suma de todos. Los locales nuevos solo muestran los meses desde que abrieron. Si más adelante cargás más meses o editás algún dato, este gráfico se actualiza solo.</p>`;
 
   html += `<div class="table-toggle">`;
   storeOptions.forEach(s => {

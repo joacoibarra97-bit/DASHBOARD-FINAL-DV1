@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { STORE_NAMES, parseStoreWorkbook, buildGeneral, StoreData } from "../../../lib/parseExcel";
-import { getReportData, saveReportData } from "../../../lib/blob";
+import { parseStoreWorkbookFull, buildGeneral, buildMostradorGeneral, StoreData, MostradorData } from "../../../lib/parseExcel";
+import { storesForMonth } from "../../../lib/stores";
+import { getReportData, saveReportData, getMostradorData, saveMostradorData } from "../../../lib/blob";
 
 const MESES = [
   "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -18,9 +19,11 @@ export async function POST(req: NextRequest) {
     }
 
     const stores: Record<string, StoreData> = {};
+    const mostrador: Record<string, MostradorData> = {};
     const faltantes: string[] = [];
 
-    for (const storeName of STORE_NAMES) {
+    // Solo se piden los locales que existen en ese mes (Franklin recién desde Octubre 2026)
+    for (const storeName of storesForMonth(mesIdx, parseInt(anio, 10))) {
       const field = storeName.toLowerCase();
       const file = form.get(field);
       if (!(file instanceof File)) {
@@ -28,7 +31,11 @@ export async function POST(req: NextRequest) {
         continue;
       }
       const buffer = await file.arrayBuffer();
-      stores[storeName] = parseStoreWorkbook(buffer);
+      // Un solo Excel alimenta los dos dashboards: servicio "M" (mostrador) va a /mostrador,
+      // el resto (delivery) va a Central de Pedidos.
+      const parsed = parseStoreWorkbookFull(buffer);
+      stores[storeName] = parsed.delivery;
+      mostrador[storeName] = parsed.mostrador;
     }
 
     if (faltantes.length > 0) {
@@ -44,6 +51,10 @@ export async function POST(req: NextRequest) {
     const current = await getReportData();
     current[monthLabel] = { ...stores, General: general };
     await saveReportData(current);
+
+    const currentMostrador = await getMostradorData();
+    currentMostrador[monthLabel] = { ...mostrador, General: buildMostradorGeneral(mostrador) };
+    await saveMostradorData(currentMostrador);
 
     return NextResponse.json({ ok: true, monthLabel });
   } catch (err: any) {

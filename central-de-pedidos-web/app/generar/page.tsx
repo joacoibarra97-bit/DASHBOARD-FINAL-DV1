@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { storesForMonth } from "../../lib/stores";
 
-const STORES = ["Arenales", "Bulnes", "Echeverria", "Guayaquil", "Olazabal", "Uriarte", "Uruguay", "Vidal"];
 const MESES = [
   "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
   "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
@@ -18,6 +18,8 @@ export default function GenerarPage() {
   const [done, setDone] = useState<string | null>(null);
   const router = useRouter();
 
+  // Los locales que se piden dependen del mes elegido (Franklin aparece desde Octubre 2026)
+  const STORES = storesForMonth(mes, parseInt(anio, 10) || 0);
   const allSelected = STORES.every((s) => files[s]);
 
   function handleFile(store: string, f: FileList | null) {
@@ -27,7 +29,7 @@ export default function GenerarPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!allSelected) {
-      setError("Te falta subir el Excel de alguno de los 8 locales.");
+      setError(`Te falta subir el Excel de alguno de los ${STORES.length} locales.`);
       return;
     }
     setLoading(true);
@@ -58,7 +60,7 @@ export default function GenerarPage() {
       <div style={styles.topbar}>
         <div style={styles.topbarInner}>
           <div>
-            <p style={styles.eyebrow}>Panel de control · 8 locales</p>
+            <p style={styles.eyebrow}>Panel de control · {STORES.length} locales</p>
             <h1 style={styles.title}>Cargar un mes nuevo</h1>
           </div>
           <a href="/pedidos" style={styles.backLink}>← Volver al dashboard</a>
@@ -88,7 +90,8 @@ export default function GenerarPage() {
         </div>
 
         <div style={styles.card}>
-          <p style={styles.label}>Los 8 Excel de Waitry (uno por local)</p>
+          <p style={styles.label}>Los {STORES.length} Excel de Waitry (uno por local)</p>
+          <p style={{ fontSize: 12, color: "#5C6478", margin: "-4px 0 10px" }}>Con estos mismos archivos se cargan los dos dashboards: los pedidos de mostrador van a Mostrador y el resto a Central de Pedidos.</p>
           <div style={styles.grid}>
             {STORES.map((s) => (
               <label key={s} style={styles.fileBox}>
@@ -111,7 +114,7 @@ export default function GenerarPage() {
         {done && <p style={styles.success}>✓ {done} generado y guardado. Volviendo al dashboard...</p>}
 
         <button type="submit" disabled={loading} style={styles.submitBtn}>
-          {loading ? "Procesando los 8 archivos..." : "Generar y guardar reporte"}
+          {loading ? `Procesando los ${STORES.length} archivos...` : "Generar y guardar reporte"}
         </button>
       </form>
     </div>

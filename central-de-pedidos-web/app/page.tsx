@@ -12,7 +12,7 @@ const SECTIONS = [
     href: "/mostrador",
     icon: "🛎️",
     title: "Mostrador",
-    desc: "Dashboard de mostrador — en construcción.",
+    desc: "Pedidos de mostrador por local. Se carga con los mismos Excel de Central de Pedidos.",
     status: "Próximamente" as string | null,
   },
   {

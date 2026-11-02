@@ -1,28 +1,40 @@
-export default function MostradorPage() {
-  return (
-    <div style={styles.page}>
-      <div style={styles.topbar}>
-        <div style={styles.topbarInner}>
-          <div>
-            <p style={styles.eyebrow}>Panel de control</p>
-            <h1 style={styles.title}>Mostrador</h1>
-          </div>
-          <a href="/" style={styles.backLink}>← Portal</a>
-        </div>
-      </div>
+import { getMostradorData } from "../../lib/blob";
+import MostradorView from "./MostradorView";
 
-      <div style={styles.wrap}>
-        <div style={styles.card}>
-          <p style={styles.icon}>🛎️</p>
-          <p style={styles.cardTitle}>En construcción</p>
-          <p style={styles.cardText}>
-            Este dashboard todavía no está armado — tiene su propia estructura de archivos y requisitos,
-            distintos a Central de Pedidos. En cuanto definamos eso, esta pestaña queda lista para usarse.
-          </p>
+export const dynamic = "force-dynamic"; // siempre traer los datos más recientes del Blob
+
+export default async function MostradorPage() {
+  const data = await getMostradorData();
+  const hasData = Object.keys(data).length > 0;
+
+  if (!hasData) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.topbar}>
+          <div style={styles.topbarInner}>
+            <div>
+              <p style={styles.eyebrow}>Panel de control</p>
+              <h1 style={styles.title}>Mostrador</h1>
+            </div>
+            <a href="/" style={styles.backLink}>← Portal</a>
+          </div>
+        </div>
+        <div style={styles.wrap}>
+          <div style={styles.card}>
+            <p style={styles.icon}>🛎️</p>
+            <p style={styles.cardTitle}>Todavía no hay pedidos de mostrador cargados</p>
+            <p style={styles.cardText}>
+              Se llena solo al cargar un mes en Central de Pedidos: los pedidos con servicio Mostrador de cada Excel
+              de Waitry se guardan acá. Cargá (o volvé a cargar) un mes para ver los datos.
+            </p>
+            <a href="/generar" style={styles.button}>+ Cargar un mes</a>
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  }
+
+  return <MostradorView data={data} />;
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -36,5 +48,6 @@ const styles: Record<string, React.CSSProperties> = {
   card: { background: "#fff", border: "1px solid #DCD8CC", borderRadius: 12, padding: "40px 32px", textAlign: "center" },
   icon: { fontSize: 34, margin: "0 0 10px" },
   cardTitle: { fontSize: 18, fontWeight: 800, color: "#14213D", margin: "0 0 10px" },
-  cardText: { fontSize: 13.5, color: "#5C6478", lineHeight: 1.6, maxWidth: 480, margin: "0 auto" },
+  cardText: { fontSize: 13.5, color: "#5C6478", lineHeight: 1.6, maxWidth: 480, margin: "0 auto 18px" },
+  button: { display: "inline-block", background: "#14213D", color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 13.5, fontWeight: 700, textDecoration: "none" },
 };
