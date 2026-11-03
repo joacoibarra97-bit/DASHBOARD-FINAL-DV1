@@ -1,15 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { deriveMostrador, aggregateMostrador, DayRec, MostradorStats } from "../../lib/aggregate";
 
-type Block = { count: number; revenue: number };
-type Day = { date: string; count: number; revenue: number };
-type Data = {
-  total_valid: number; revenue: number; abandoned: number; cancelled: number;
-  payment: { SI: Block; NO: Block };
-  hourly_avg: number[]; daily: Day[];
-  best_day_revenue: Day; best_day_count: Day; num_days: number;
-};
+type Data = MostradorStats & { days?: Record<string, DayRec> };
 
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 const monthOrder = (k: string) => { const [m, y] = k.split(" "); return parseInt(y, 10) * 12 + MESES.indexOf(m); };
@@ -29,12 +23,27 @@ export default function MostradorView({ data }: { data: Record<string, Record<st
   const months = Object.keys(data).sort((a, b) => monthOrder(a) - monthOrder(b));
   const [month, setMonth] = useState(months[months.length - 1]);
   const [tab, setTab] = useState("General");
+  // Filtro por fechas (vacío = mes completo). Se reinicia al cambiar de mes.
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
 
   const stores = Object.keys(data[month] || {}).filter((s) => s !== "General");
   const key = data[month]?.[tab] ? tab : "General"; // si el local no existe en ese mes, volvemos a General
-  const d = data[month][key];
+  const hasDays = stores.length > 0 && stores.every((s) => !!data[month][s].days);
+  const rangeInvalid = !!(from && to && from > to);
+  const rangeOn = hasDays && !rangeInvalid && !!(from || to);
+  const viewOf = (k: string): Data => {
+    if (!rangeOn) return data[month][k];
+    if (k === "General") return aggregateMostrador(stores.map((s) => deriveMostrador(data[month][s].days!, from, to))) as Data;
+    return deriveMostrador(data[month][k].days!, from, to) as Data;
+  };
+  const d = viewOf(key);
   const prevMonth = months[months.indexOf(month) - 1];
-  const prev = prevMonth ? data[prevMonth]?.[key] : undefined;
+  const prev = !rangeOn && prevMonth ? data[prevMonth]?.[key] : undefined; // con filtro de fechas no se compara contra el mes anterior
+  const [yy, mmN] = month.split(" ");
+  const monthIdx = MESES.indexOf(yy);
+  const monthMin = `${mmN}-${String(monthIdx + 1).padStart(2, "0")}-01`;
+  const monthMax = `${mmN}-${String(monthIdx + 1).padStart(2, "0")}-${String(new Date(parseInt(mmN, 10), monthIdx + 1, 0).getDate()).padStart(2, "0")}`;
   const sameStores = prevMonth ? Object.keys(data[prevMonth]).length === Object.keys(data[month]).length : true;
 
   const ticket = d.total_valid ? d.revenue / d.total_valid : 0;
@@ -71,7 +80,7 @@ export default function MostradorView({ data }: { data: Record<string, Record<st
       <div style={S.wrap}>
         <div style={S.row}>
           {months.map((m) => (
-            <button key={m} onClick={() => setMonth(m)} style={m === month ? S.chipOn : S.chip}>{m}</button>
+            <button key={m} onClick={() => { setMonth(m); setFrom(""); setTo(""); }} style={m === month ? S.chipOn : S.chip}>{m}</button>
           ))}
         </div>
 
@@ -81,10 +90,24 @@ export default function MostradorView({ data }: { data: Record<string, Record<st
           ))}
         </div>
 
-        {key === "General" && prevMonth && !sameStores && (
+        <div style={S.rangeBar}>
+          <span style={S.rangeTitle}>📅 Filtrar por fechas</span>
+          <label style={S.rangeLabel}>Desde
+            <input type="date" min={monthMin} max={monthMax} value={from} disabled={!hasDays} onChange={(e) => setFrom(e.target.value)} style={S.rangeInput} />
+          </label>
+          <label style={S.rangeLabel}>Hasta
+            <input type="date" min={monthMin} max={monthMax} value={to} disabled={!hasDays} onChange={(e) => setTo(e.target.value)} style={S.rangeInput} />
+          </label>
+          {(from || to) && <button onClick={() => { setFrom(""); setTo(""); }} style={S.chip}>Quitar filtro</button>}
+          {!hasDays && <span style={S.warnInline}>Este mes se cargó con una versión anterior: volvé a cargarlo para poder filtrar por día.</span>}
+          {rangeInvalid && <span style={S.errInline}>"Desde" es posterior a "Hasta".</span>}
+          {rangeOn && <span style={S.note2}>Mostrando {from ? dayLabel(from) : "el inicio"} → {to ? dayLabel(to) : "el final"}. Sin comparación con el mes anterior.</span>}
+        </div>
+
+        {!rangeOn && key === "General" && prevMonth && !sameStores && (
           <p style={S.warn}><b>Ojo:</b> {month} suma {stores.length} locales y {prevMonth} sumó {Object.keys(data[prevMonth]).length - 1}. La variación incluye el aporte de los locales nuevos.</p>
         )}
-        {!prev && prevMonth === undefined && <p style={S.note}>Primer mes cargado: todavía no hay con qué comparar.</p>}
+        {!rangeOn && !prev && prevMonth === undefined && <p style={S.note}>Primer mes cargado: todavía no hay con qué comparar.</p>}
 
         <div style={S.grid}>
           {kpis.map((k) => (
@@ -155,6 +178,13 @@ const S: Record<string, React.CSSProperties> = {
   bar: { width: "100%", borderRadius: "3px 3px 0 0", minHeight: 1 },
   barLabel: { fontSize: 9.5, color: "#5C6478", marginTop: 4, fontFamily: "monospace" },
   warn: { fontSize: 12.5, color: "#B9760F", margin: "0 0 12px" },
+  rangeBar: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, background: "#fff", border: "1px solid #DCD8CC", borderRadius: 10, padding: "10px 14px", margin: "0 0 14px" },
+  rangeTitle: { fontWeight: 800, fontSize: 13 },
+  rangeLabel: { display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "#5C6478" },
+  rangeInput: { padding: "6px 8px", borderRadius: 6, border: "1px solid #DCD8CC", fontSize: 13, color: "#14213D" },
+  warnInline: { fontSize: 12, color: "#B9760F" },
+  errInline: { fontSize: 12, color: "#C0392B", fontWeight: 700 },
+  note2: { fontSize: 12, color: "#5C6478" },
   note: { fontSize: 12.5, color: "#5C6478", margin: "0 0 12px" },
   foot: { fontSize: 12, color: "#5C6478", margin: "6px 0 0" },
 };

@@ -20,6 +20,18 @@ export type StoreData = {
   num_days: number;
   manual: { whatsapp: number; telefono: number; online: number };
   yearAgo: { total: number; rappi: number; py: number; cat: number };
+  days?: Record<string, DayRec>; // desglose por día (para filtrar por fechas en el dashboard)
+};
+
+// Un día de un local: pedidos, facturación, por canal, por forma de pago, por hora, abandonos y cancelados.
+export type DayRec = {
+  n: number;
+  rev: number;
+  ch: Record<string, [number, number]>; // canal -> [pedidos, facturación]
+  pay: { SI: [number, number]; NO: [number, number] };
+  h: number[]; // pedidos por hora (24)
+  ab: number;
+  ca: number;
 };
 
 function normalizeChannel(raw: any): string | null {
@@ -74,11 +86,13 @@ export type MostradorData = {
   best_day_revenue: { date: string; count: number; revenue: number };
   best_day_count: { date: string; count: number; revenue: number };
   num_days: number;
+  days?: Record<string, DayRec>;
 };
 
 export function parseStoreWorkbook(buffer: ArrayBuffer): StoreData {
   return parseStoreWorkbookFull(buffer).delivery;
 }
+
 
 export function parseStoreWorkbookFull(buffer: ArrayBuffer): { delivery: StoreData; mostrador: MostradorData } {
   const wb = XLSX.read(buffer, { type: "array", cellDates: true });
@@ -93,12 +107,16 @@ export function parseStoreWorkbookFull(buffer: ArrayBuffer): { delivery: StoreDa
     payCount: Record<string, number>; payRev: Record<string, number>;
     hourly: number[]; dailyCount: Record<string, number>; dailyRev: Record<string, number>;
     days: Set<string>; revenue: number;
+    dayRecs: Record<string, DayRec>;
   };
   const newAcc = (): Acc => ({
     valid: 0, abandoned: 0, cancelled: 0, chanCount: {}, chanRev: {},
     payCount: { SI: 0, NO: 0 }, payRev: { SI: 0, NO: 0 },
     hourly: new Array(24).fill(0), dailyCount: {}, dailyRev: {}, days: new Set<string>(), revenue: 0,
+    dayRecs: {},
   });
+  const dayOf = (acc: Acc, date: string): DayRec =>
+    acc.dayRecs[date] || (acc.dayRecs[date] = { n: 0, rev: 0, ch: {}, pay: { SI: [0, 0], NO: [0, 0] }, h: new Array(24).fill(0), ab: 0, ca: 0 });
   const del = newAcc();
   const mos = newAcc();
 
@@ -114,12 +132,13 @@ export function parseStoreWorkbookFull(buffer: ArrayBuffer): { delivery: StoreDa
     const pagado = row[13];
 
     const acc = isMostrador(canalRaw) ? mos : del;
+    const h = parseHora(hora);
 
     const isAbandoned = nrEntrega == null || String(nrEntrega).trim() === "";
     const isCancelled = cancelada != null && String(cancelada).toLowerCase().includes("cancel");
 
-    if (isAbandoned) { acc.abandoned++; continue; }
-    if (isCancelled) { acc.cancelled++; continue; }
+    if (isAbandoned) { acc.abandoned++; if (h) dayOf(acc, h.date).ab++; continue; }
+    if (isCancelled) { acc.cancelled++; if (h) dayOf(acc, h.date).ca++; continue; }
 
     acc.valid++;
     const chan = normalizeChannel(canalRaw) || "?";
@@ -132,8 +151,13 @@ export function parseStoreWorkbookFull(buffer: ArrayBuffer): { delivery: StoreDa
     acc.payCount[pay] = (acc.payCount[pay] || 0) + 1;
     acc.payRev[pay] = (acc.payRev[pay] || 0) + rev;
 
-    const h = parseHora(hora);
     if (h) {
+      // desglose por día: permite filtrar por fechas en el dashboard sin volver a cargar el Excel
+      const dr = dayOf(acc, h.date);
+      dr.n++; dr.rev += rev; dr.h[h.hour]++;
+      if (!dr.ch[chan]) dr.ch[chan] = [0, 0];
+      dr.ch[chan][0]++; dr.ch[chan][1] += rev;
+      if (pay === "SI" || pay === "NO") { dr.pay[pay][0]++; dr.pay[pay][1] += rev; }
       acc.hourly[h.hour]++;
       acc.dailyCount[h.date] = (acc.dailyCount[h.date] || 0) + 1;
       acc.dailyRev[h.date] = (acc.dailyRev[h.date] || 0) + rev;
@@ -183,6 +207,7 @@ export function parseStoreWorkbookFull(buffer: ArrayBuffer): { delivery: StoreDa
     num_days: d.numDays,
     manual: { whatsapp: 0, telefono: 0, online: 0 },
     yearAgo: { total: 0, rappi: 0, py: 0, cat: 0 },
+    days: del.dayRecs,
   };
 
   const m = summarize(mos);
@@ -200,6 +225,7 @@ export function parseStoreWorkbookFull(buffer: ArrayBuffer): { delivery: StoreDa
     best_day_revenue: m.bestRev,
     best_day_count: m.bestCnt,
     num_days: m.numDays,
+    days: mos.dayRecs,
   };
 
   return { delivery, mostrador };

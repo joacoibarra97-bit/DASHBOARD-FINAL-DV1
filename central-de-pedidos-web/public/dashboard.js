@@ -45,6 +45,150 @@ function storesOf(month){ return Object.keys(DATA[month] || {}).filter(s => s !=
 // Las pestañas dependen del mes: un local solo aparece en los meses donde tiene datos
 function tabOrder(){ return ['General', ...storesOf(currentMonth), 'Histórico']; }
 let currentTab = 'General';
+
+/* ===================== Filtro por fechas ===================== */
+// Cada local guarda su desglose por día (store.days). Con eso se recalculan todos los totales para
+// cualquier rango Desde–Hasta (ambos incluidos), sin volver a cargar el Excel. Los meses cargados con
+// una versión anterior no tienen ese desglose: para ellos el filtro queda deshabilitado.
+let RANGE = { month: null, from: '', to: '' };
+function monthHasDays(month){
+  const list = storesOf(month);
+  return list.length > 0 && list.every(s => DATA[month][s].days);
+}
+function rangeInvalid(){ return !!(RANGE.from && RANGE.to && RANGE.from > RANGE.to); }
+function rangeActive(){
+  return RANGE.month === currentMonth && !!(RANGE.from || RANGE.to) && !rangeInvalid() && monthHasDays(currentMonth);
+}
+function dmShort(iso){ return iso ? iso.split('-').reverse().slice(0,2).join('/') : ''; }
+
+function emptyStoreView(){
+  return {
+    total_valid:0, abandoned:0, cancelled:0,
+    channels:{ Rappi:{count:0,revenue:0}, PedidosYa:{count:0,revenue:0},
+      CAT:{count:0,revenue:0,sub:{ D:{count:0,revenue:0}, MD:{count:0,revenue:0}, PO:{count:0,revenue:0} }} },
+    payment:{ SI:{count:0,revenue:0}, NO:{count:0,revenue:0} },
+    hourly_avg:new Array(24).fill(0), daily:[],
+    best_day_revenue:{date:'',count:0,revenue:0}, best_day_count:{date:'',count:0,revenue:0},
+    num_days:0, manual:{whatsapp:0,telefono:0,online:0}, yearAgo:{total:0,rappi:0,py:0,cat:0},
+    _hourly:new Array(24).fill(0)
+  };
+}
+function pickBestDays(v){
+  const empty = {date:'',count:0,revenue:0};
+  v.best_day_revenue = v.daily.reduce((a,b) => b.revenue > a.revenue ? b : a, v.daily[0] || empty);
+  v.best_day_count = v.daily.reduce((a,b) => b.count > a.count ? b : a, v.daily[0] || empty);
+}
+// Totales de UN local para el rango (misma lógica que el parser del servidor)
+function deriveStore(st, from, to){
+  const v = emptyStoreView();
+  let nd = 0;
+  Object.keys(st.days || {}).sort().forEach(date => {
+    if((from && date < from) || (to && date > to)) return;
+    const d = st.days[date];
+    v.abandoned += d.ab || 0;
+    v.cancelled += d.ca || 0;
+    if(!d.n) return;
+    v.total_valid += d.n;
+    ['Rappi','PedidosYa'].forEach(k => { const c = d.ch[k]; if(c){ v.channels[k].count += c[0]; v.channels[k].revenue += c[1]; } });
+    ['D','MD','PO'].forEach(k => {
+      const c = d.ch[k];
+      if(c){
+        v.channels.CAT.sub[k].count += c[0]; v.channels.CAT.sub[k].revenue += c[1];
+        v.channels.CAT.count += c[0]; v.channels.CAT.revenue += c[1];
+      }
+    });
+    ['SI','NO'].forEach(p => { v.payment[p].count += d.pay[p][0]; v.payment[p].revenue += d.pay[p][1]; });
+    for(let h = 0; h < 24; h++) v._hourly[h] += d.h[h] || 0;
+    v.daily.push({ date, count: d.n, revenue: d.rev });
+    nd++;
+  });
+  v.num_days = nd || 1; // igual que el parser
+  v.hourly_avg = v._hourly.map(h => Math.round(h / v.num_days * 100) / 100);
+  pickBestDays(v);
+  return v;
+}
+// Suma de locales (misma fórmula que buildGeneral del servidor)
+function aggregateGeneral(list){
+  const g = emptyStoreView();
+  const hourlySum = new Array(24).fill(0);
+  const dailyAgg = {};
+  let daysAccum = 0;
+  list.forEach(s => {
+    g.total_valid += s.total_valid; g.abandoned += s.abandoned; g.cancelled += s.cancelled;
+    ['Rappi','PedidosYa'].forEach(k => { g.channels[k].count += s.channels[k].count; g.channels[k].revenue += s.channels[k].revenue; });
+    g.channels.CAT.count += s.channels.CAT.count; g.channels.CAT.revenue += s.channels.CAT.revenue;
+    ['D','MD','PO'].forEach(k => { g.channels.CAT.sub[k].count += s.channels.CAT.sub[k].count; g.channels.CAT.sub[k].revenue += s.channels.CAT.sub[k].revenue; });
+    ['SI','NO'].forEach(p => { g.payment[p].count += s.payment[p].count; g.payment[p].revenue += s.payment[p].revenue; });
+    for(let h = 0; h < 24; h++) hourlySum[h] += s._hourly ? s._hourly[h] : s.hourly_avg[h] * s.num_days;
+    s.daily.forEach(r => {
+      if(!dailyAgg[r.date]) dailyAgg[r.date] = { count:0, revenue:0 };
+      dailyAgg[r.date].count += r.count; dailyAgg[r.date].revenue += r.revenue;
+    });
+    daysAccum += s.num_days;
+  });
+  const avgDays = list.length ? daysAccum / list.length : 30;
+  g.hourly_avg = hourlySum.map(h => Math.round(h / avgDays * 100) / 100);
+  g.daily = Object.keys(dailyAgg).sort().map(d => ({ date:d, count:dailyAgg[d].count, revenue:dailyAgg[d].revenue }));
+  pickBestDays(g);
+  g.num_days = Math.round(avgDays * 10) / 10;
+  return g;
+}
+// Lo que se MUESTRA: el total guardado (con tus ediciones) o, si hay filtro de fechas, lo recalculado por día
+function viewOf(month, key){
+  if(!(month === currentMonth && rangeActive())) return DATA[month][key];
+  if(key === 'General') return aggregateGeneral(storesOf(month).map(s => deriveStore(DATA[month][s], RANGE.from, RANGE.to)));
+  return deriveStore(DATA[month][key], RANGE.from, RANGE.to);
+}
+
+function ensureRangeBar(){
+  if(!document.getElementById('rangeStyle')){
+    const st = document.createElement('style');
+    st.id = 'rangeStyle';
+    st.textContent =
+      '.range-bar{display:flex;flex-wrap:wrap;align-items:center;gap:12px;background:#fff;border:1px solid #DCD8CC;border-radius:10px;padding:10px 14px;margin:0 0 16px;font-size:13px;color:#14213D}' +
+      '.range-bar b{font-weight:800}.range-bar label{display:flex;align-items:center;gap:6px;color:#5C6478}' +
+      '.range-bar input[type=date]{padding:6px 8px;border:1px solid #DCD8CC;border-radius:6px;font-size:13px;color:#14213D;background:#fff}' +
+      '.range-bar button{padding:6px 12px;border:1px solid #14213D;border-radius:6px;background:#14213D;color:#fff;font-size:12.5px;cursor:pointer}' +
+      '.range-bar .rb-warn{color:#B9760F;font-size:12px}.range-bar .rb-err{color:#C0392B;font-weight:700;font-size:12px}.range-bar .rb-note{color:#5C6478;font-size:12px}' +
+      '.range-banner{background:#FFF6E0;border:1px solid #EE9D2B;border-radius:10px;padding:10px 14px;margin:0 0 16px;font-size:13px;color:#14213D}' +
+      '.range-on .edit-hint{display:none !important}.range-on [contenteditable]{cursor:default}';
+    document.head.appendChild(st);
+  }
+  let el = document.getElementById('rangeBar');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'rangeBar';
+    const mw = document.getElementById('mainWrap');
+    mw.parentNode.insertBefore(el, mw);
+  }
+  return el;
+}
+function renderRangeBar(){
+  const el = ensureRangeBar();
+  if(RANGE.month !== currentMonth) RANGE = { month: currentMonth, from: '', to: '' };
+  if(currentTab === 'Histórico'){ el.style.display = 'none'; return; }
+  el.style.display = '';
+  const [mName, yStr] = currentMonth.split(' ');
+  const mi = MES_ORDEN[mName], y = parseInt(yStr, 10);
+  const pad = n => String(n).padStart(2, '0');
+  const min = `${y}-${pad(mi+1)}-01`;
+  const max = `${y}-${pad(mi+1)}-${pad(new Date(y, mi+1, 0).getDate())}`;
+  const ok = monthHasDays(currentMonth);
+  el.className = 'range-bar';
+  el.innerHTML =
+    `<b>📅 Filtrar por fechas</b>` +
+    `<label>Desde <input type="date" id="rangeFrom" min="${min}" max="${max}" value="${RANGE.from}" ${ok ? '' : 'disabled'}></label>` +
+    `<label>Hasta <input type="date" id="rangeTo" min="${min}" max="${max}" value="${RANGE.to}" ${ok ? '' : 'disabled'}></label>` +
+    ((RANGE.from || RANGE.to) ? `<button id="rangeClear">Quitar filtro</button>` : '') +
+    (!ok ? `<span class="rb-warn">Este mes se cargó con una versión anterior: volvé a cargarlo para poder filtrar por día.</span>` : '') +
+    (rangeInvalid() ? `<span class="rb-err">"Desde" es posterior a "Hasta".</span>` : '') +
+    (rangeActive() ? `<span class="rb-note">Vista de solo lectura · sin comparación con el mes anterior.</span>` : '');
+  const f = el.querySelector('#rangeFrom'), t = el.querySelector('#rangeTo'), c = el.querySelector('#rangeClear');
+  if(f) f.addEventListener('change', e => { RANGE.from = e.target.value; renderMain(); });
+  if(t) t.addEventListener('change', e => { RANGE.to = e.target.value; renderMain(); });
+  if(c) c.addEventListener('click', () => { RANGE.from = ''; RANGE.to = ''; renderMain(); });
+}
+
 let tableMetric = 'count'; // 'count' | 'revenue'
 let historicoStore = 'Todos los locales';
 let historicoMetric = 'count'; // 'count' | 'revenue'
@@ -121,15 +265,18 @@ function renderAll(){
 
 function renderMain(){
   renderTabs();
+  renderRangeBar();
 
   if(currentTab === 'Histórico'){
     document.getElementById('resetBtn').style.display = 'none';
     renderHistoricoView();
     return;
   }
-  document.getElementById('resetBtn').style.display = '';
+  document.getElementById('resetBtn').style.display = rangeActive() ? 'none' : '';
 
-  const store = DATA[currentMonth][currentTab];
+  const rangeOn = rangeActive();
+  document.body.classList.toggle('range-on', rangeOn);
+  const store = viewOf(currentMonth, currentTab);
   const wrap = document.getElementById('mainWrap');
   const isGeneral = currentTab === 'General';
   const tp = totalPedidos(store);
@@ -139,6 +286,9 @@ function renderMain(){
   const pctTarjeta = payTotal > 0 ? store.payment.SI.count / payTotal : 0;
 
   let html = '';
+  if(rangeOn){
+    html += `<div class="range-banner">📅 Vista filtrada: <b>${RANGE.from ? dmShort(RANGE.from) : 'inicio del mes'}</b> al <b>${RANGE.to ? dmShort(RANGE.to) : 'fin del mes'}</b>. Es solo lectura: los números editados a mano y la carga manual (otros canales, año anterior) no se aplican a esta vista.</div>`;
+  }
   let sectionCounter = 1;
   const nextIdx = () => String(sectionCounter++).padStart(2,'0');
 
@@ -175,7 +325,9 @@ function renderMain(){
   /* ---- Comparación vs mes anterior ---- */
   html += `<div class="section-title"><span class="idx">${nextIdx()}</span> Comparación vs. mes anterior</div>`;
   const prevMonth = previousMonthOf(currentMonth);
-  if(prevMonth && DATA[prevMonth][currentTab]){
+  if(rangeOn){
+    html += `<p class="section-note">Con un filtro de fechas activo no se compara contra el mes anterior (compararías un tramo del mes contra un mes completo). Quitá el filtro para ver la comparación.</p>`;
+  } else if(prevMonth && DATA[prevMonth][currentTab]){
     html += `<p class="section-note">Si editás algún número a mano, esta comparación se recalcula sola con el valor nuevo.</p>`;
     if(currentTab === 'General' && storesOf(currentMonth).length !== storesOf(prevMonth).length){
       html += `<p class="section-note" style="color:#B9760F;"><b>Ojo:</b> ${currentMonth} suma ${storesOf(currentMonth).length} locales y ${prevMonth} sumó ${storesOf(prevMonth).length}. La variación incluye el aporte de los locales nuevos; para comparar igual contra igual, mirá cada local por separado.</p>`;
@@ -211,6 +363,7 @@ function renderMain(){
   });
   html += `</div>`;
 
+  if(!rangeOn){
   /* ---- Otros canales (carga manual) ---- */
   const manual = store.manual;
   const manualTotal = (manual.whatsapp||0) + (manual.telefono||0) + (manual.online||0);
@@ -276,7 +429,7 @@ function renderMain(){
   } else {
     html += `<p class="section-note">Todavía no cargaste el total del año pasado para esta vista — en cuanto pongas un número en "Total pedidos" aparece la comparación.</p>`;
   }
-
+  }
 
   /* ---- Tabla comparativa (solo General) ---- */
   if(isGeneral){
@@ -327,12 +480,18 @@ function renderMain(){
   </div>`;
 
   wrap.innerHTML = html;
+  if(rangeOn){
+    // vista filtrada = solo lectura
+    wrap.querySelectorAll('[contenteditable]').forEach(el => el.setAttribute('contenteditable', 'false'));
+    wrap.querySelectorAll('input[type=number]').forEach(i => { i.disabled = true; });
+  }
 
   attachEditableHandlers();
   if(isGeneral) attachTableToggle();
 
   document.getElementById('footerNote').textContent =
-    `${currentMonth} · ${isGeneral ? 'los ' + storesOf(currentMonth).length + ' locales' : currentTab} · ${fmtInt(store.num_days || 30)} días con datos`;
+    `${currentMonth} · ${isGeneral ? 'los ' + storesOf(currentMonth).length + ' locales' : currentTab} · ${fmtInt(store.num_days || 30)} días con datos` +
+    (rangeOn ? ` · filtrado del ${RANGE.from ? dmShort(RANGE.from) : 'inicio'} al ${RANGE.to ? dmShort(RANGE.to) : 'fin'}` : '');
 }
 
 function previousMonthOf(m){
@@ -390,7 +549,7 @@ function comparisonTableHTML(store, prevStore, prevMonthLabel, currMonthLabel){
 function renderPerfTable(){
   const channels = [['Rappi','Rappi'],['PedidosYa','PedidosYa'],['CAT','C.A.T.']];
   const rows = storesOf(currentMonth).map(s => {
-    const st = DATA[currentMonth][s];
+    const st = viewOf(currentMonth, s);
     return { name: s, channels: st.channels };
   });
 
@@ -713,7 +872,7 @@ document.getElementById('exportBtn').addEventListener('click', async () => {
 
     // 2) Esqueleto del dashboard: copiamos el contenedor y vaciamos lo que dibuja el JS al cargar
     const skeleton = document.getElementById('mainWrap').parentElement.cloneNode(true);
-    ['monthSelect', 'tabBar', 'mainWrap', 'footerNote'].forEach(id => {
+    ['monthSelect', 'tabBar', 'rangeBar', 'mainWrap', 'footerNote'].forEach(id => {
       const el = skeleton.querySelector('#' + id);
       if(el) el.innerHTML = '';
     });
